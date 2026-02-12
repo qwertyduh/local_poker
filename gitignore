@@ -1,0 +1,18 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# C++ Compiled Binaries
+banker_app
+player_app
+*.o
+*.out
+
+# IDE specific files (if you use them)
+.vscode/
+.idea/
+*.swp
+
+# Raylib/Build artifacts
+build/
