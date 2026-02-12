@@ -3,65 +3,61 @@ import threading
 
 def get_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    ip = s.getsockname()[0]
-    s.close()
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
     return ip
 
 HOST = get_ip()
 PORT = 65432
-clients = {} # Stores {socket: name}
+clients = {} 
 total_pot = 0
 
 def broadcast(message):
-    """Sends a message to every connected player."""
-    for client_socket in clients:
+    # C++ needs a null terminator (\0) to recognize the end of a string
+    formatted_msg = f"{message}\0".encode()
+    for client_socket in list(clients.keys()):
         try:
-            client_socket.send(message.encode())
+            client_socket.send(formatted_msg)
         except:
-            # Remove broken connections
-            client_socket.close()
+            del clients[client_socket]
 
 def handle_player(conn, addr):
     global total_pot
     try:
-        # First message from player is always their name
-        name = conn.recv(1024).decode()
+        # Get player name
+        name = conn.recv(1024).decode().strip('\x00')
         clients[conn] = name
-        
-        welcome_msg = f"\n>>> {name} joined the table! Current Pot: ${total_pot}"
-        print(welcome_msg)
-        broadcast(welcome_msg)
+        print(f"PLAYER JOINED: {name}")
+        broadcast(f"Pot: ${total_pot} ({name} joined)")
 
         while True:
-            msg = conn.recv(1024).decode()
-            if not msg: break
+            data = conn.recv(1024).decode().strip('\x00')
+            if not data: break
             
-            if msg.isdigit():
-                bet = int(msg)
+            if data.isdigit():
+                bet = int(data)
                 total_pot += bet
-                update = f"\n[UPDATE] {name} bet ${bet}. Total Pot is now: ${total_pot}"
-                print(update)
-                broadcast(update)
+                print(f"{name} bet ${bet}. Total: ${total_pot}")
+                broadcast(f"Pot: ${total_pot} | Last: {name} (${bet})")
     except:
         pass
     finally:
-        if conn in clients:
-            leave_msg = f"\n>>> {clients[conn]} left the table."
-            print(leave_msg)
-            del clients[conn]
-            broadcast(leave_msg)
         conn.close()
 
 def start():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
     server.listen()
-    print(f"[BANKER ACTIVE] IP: {HOST} | Waiting for players...")
+    print(f"BANKER ACTIVE ON {HOST}:{PORT}")
     while True:
         conn, addr = server.accept()
-        thread = threading.Thread(target=handle_player, args=(conn, addr))
-        thread.start()
+        threading.Thread(target=handle_player, args=(conn, addr), daemon=True).start()
 
 if __name__ == "__main__":
     start()
