@@ -1,35 +1,42 @@
 #include "raylib.h"
+#include <iostream>
+#include <string>
+#include <thread>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <string>
-#include <thread>
-#include <iostream>
+#include <string.h> // Added for memset
 
 int sock = 0;
-std::string potStatus = "Waiting for Banker...";
-std::string lastAction = "Press SPACE to bet $10";
+std::string myName;
+std::string potStr = "0", walletStr = "0", currentTurnName = "";
+bool isMyTurn = false;
 
 void listenToServer() {
     char buffer[1024];
     while (true) {
+        memset(buffer, 0, 1024); // Clear buffer every time
         int valread = recv(sock, buffer, 1024, 0);
         if (valread > 0) {
-            buffer[valread] = '\0'; // Null-terminate the string
-            potStatus = std::string(buffer);
+            std::string msg(buffer);
+            size_t pPos = msg.find("POT:"), wPos = msg.find("|WALLET:"), tPos = msg.find("|TURN:");
+            if (pPos != std::string::npos && wPos != std::string::npos && tPos != std::string::npos) {
+                potStr = msg.substr(pPos + 4, wPos - (pPos + 4));
+                walletStr = msg.substr(wPos + 8, tPos - (wPos + 8));
+                currentTurnName = msg.substr(tPos + 6);
+                isMyTurn = (currentTurnName == myName);
+            }
         } else {
-            potStatus = "CONNECTION LOST";
-            break;
+            break; 
         }
     }
 }
 
 int main() {
-    std::string ip, name;
+    std::string ip;
+    std::cout << "Enter Your Name: "; std::cin >> myName;
     std::cout << "Enter Banker IP: "; std::cin >> ip;
-    std::cout << "Enter Your Name: "; std::cin >> name;
 
-    // --- Networking ---
     struct sockaddr_in serv_addr;
     sock = socket(AF_INET, SOCK_STREAM, 0);
     serv_addr.sin_family = AF_INET;
@@ -41,34 +48,35 @@ int main() {
         return -1;
     }
 
-    send(sock, name.c_str(), name.length(), 0);
+    // FIXED: Now sending 'myName' (the one with data) instead of 'name'
+    send(sock, myName.c_str(), myName.length(), 0);
+    
     std::thread(listenToServer).detach();
 
-    // --- Raylib Window ---
-    InitWindow(400, 300, "Poker Project - PLAYER");
+    InitWindow(400, 450, "Poker - Player");
     SetTargetFPS(60);
 
     while (!WindowShouldClose()) {
-        if (IsKeyPressed(KEY_SPACE)) {
-            std::string bet = "10";
-            send(sock, bet.c_str(), bet.length(), 0);
-            lastAction = "You bet $10!";
+        if (isMyTurn && IsKeyPressed(KEY_SPACE)) {
+            send(sock, "10", 2, 0);
         }
 
         BeginDrawing();
-            ClearBackground(GetColor(0x181818FF)); // Dark grey background
-            DrawText("LOCAL POKER", 20, 20, 20, MAROON);
+            ClearBackground(GetColor(0x1a1a1aff));
             
-            // Draw the Pot Status
-            DrawRectangle(20, 80, 360, 60, DARKGRAY);
-            DrawText(potStatus.c_str(), 40, 95, 20, GREEN);
+            DrawText(TextFormat("POT: $%s", potStr.c_str()), 120, 40, 30, GOLD);
+            DrawText(TextFormat("WALLET: $%s", walletStr.c_str()), 40, 100, 20, GREEN);
+
+            DrawRectangle(20, 160, 360, 80, isMyTurn ? DARKGREEN : DARKGRAY);
+            std::string turnText = isMyTurn ? "YOUR TURN!" : "WAITING FOR: " + currentTurnName;
+            DrawText(turnText.c_str(), 40, 190, 20, WHITE);
+
+            if(isMyTurn) DrawText("Press [SPACE] to bet $10", 80, 380, 18, YELLOW);
+            else DrawText("Wait for your turn...", 110, 380, 18, GRAY);
             
-            DrawText(lastAction.c_str(), 40, 250, 15, LIGHTGRAY);
-            DrawText("Press [SPACE] to Bet $10", 40, 220, 18, GOLD);
+            DrawText(TextFormat("Playing as: %s", myName.c_str()), 10, 430, 10, GRAY);
         EndDrawing();
     }
-
-    close(sock);
     CloseWindow();
     return 0;
 }
