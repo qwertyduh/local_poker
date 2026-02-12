@@ -41,27 +41,34 @@ void broadcast_game_state() {
     }
 }
 
-// NEW: Check if the raise is affordable for everyone currently in the hand
-bool can_all_match(int target_bet) {
-    for (auto const& [name, p] : players) {
-        if (!p.folded) {
-            // Can the player afford the difference?
-            int needed = target_bet - p.round_contribution;
-            if (p.wallet < needed) return false;
-        }
-    }
-    return true;
-}
-
 void award_winner(std::string winner_name) {
     if (players.count(winner_name)) {
         players[winner_name].wallet += total_pot;
         std::cout << "\n>>> " << winner_name << " WON $" << total_pot << " <<<\n" << std::endl;
-        total_pot = 0; last_bet = 0; turn_index = 0;
+        
+        total_pot = 0;
+        last_bet = 0;
+        turn_index = 0;
         for (auto &pair : players) {
             pair.second.folded = false;
             pair.second.round_contribution = 0;
             pair.second.acted = false;
+        }
+
+        // --- FIXED REMOVAL LOGIC ---
+        for (auto it = turn_order.begin(); it != turn_order.end(); ) {
+            std::string pName = *it;
+            if (players[pName].wallet <= 0) {
+                std::cout << "[REMOVAL] " << pName << " is bankrupt and removed." << std::endl;
+                std::string exitMsg = "EXIT:Bankrupt";
+                send(players[pName].socket, exitMsg.c_str(), exitMsg.length() + 1, 0);
+                
+                // Remove from both containers
+                it = turn_order.erase(it);
+                players.erase(pName); 
+            } else {
+                ++it;
+            }
         }
     }
 }
@@ -73,6 +80,16 @@ void next_turn() {
         turn_index = (turn_index + 1) % turn_order.size();
         if (turn_index == initial_index) break;
     } while (players[turn_order[turn_index]].folded);
+}
+
+bool can_all_match(int target_bet) {
+    for (auto const& [name, p] : players) {
+        if (!p.folded) {
+            int needed = target_bet - p.round_contribution;
+            if (p.wallet < needed) return false;
+        }
+    }
+    return true;
 }
 
 void handle_banker_input() {
@@ -89,7 +106,7 @@ void handle_banker_input() {
                 for (auto const& n : turn_order) if (!players[n].folded) active.push_back(n);
                 for (int i=0; i<active.size(); ++i) std::cout << i+1 << ". " << active[i] << std::endl;
                 int idx; std::cin >> idx;
-                if (idx > 0 && idx <= active.size()) award_winner(active[idx-1]);
+                if (idx > 0 && idx <= (int)active.size()) award_winner(active[idx-1]);
             }
             banker_deciding = false;
             broadcast_game_state();
@@ -121,7 +138,8 @@ void handle_player(int client_socket) {
 
         {
             std::lock_guard<std::mutex> lock(game_mutex);
-            if (!banker_deciding && name == turn_order[turn_index]) {
+            // Check if player still exists before processing turn
+            if (players.count(name) && !banker_deciding && name == turn_order[turn_index]) {
                 Player &p = players[name];
                 bool valid = false;
 
@@ -141,7 +159,6 @@ void handle_player(int client_socket) {
                     try {
                         int amount = std::stoi(action.substr(4));
                         int target_total = p.round_contribution + amount;
-                        // NEW CRITICAL CHECK: Does everyone have enough money to match this?
                         if (p.wallet >= amount && target_total >= last_bet && can_all_match(target_total)) {
                             p.wallet -= amount;
                             p.round_contribution += amount;
@@ -150,19 +167,21 @@ void handle_player(int client_socket) {
                             for (auto &pair : players) pair.second.acted = false;
                             p.acted = true;
                             valid = true;
-                        } else {
-                            std::cout << "[REJECTED] Bet of " << amount << " is too high for the table or invalid." << std::endl;
                         }
                     } catch (...) {}
                 }
 
                 if (valid) {
                     int active_count = 0; std::string last;
-                    for (auto const& [n, pl] : players) if (!pl.folded) { active_count++; last = n; }
+                    for (auto const& n : turn_order) {
+                        if (players.count(n) && !players[n].folded) { active_count++; last = n; }
+                    }
                     if (active_count == 1) award_winner(last);
                     else {
                         bool done = true;
-                        for (auto const& [n, pl] : players) if (!pl.folded && (pl.round_contribution < last_bet || !pl.acted)) done = false;
+                        for (auto const& n : turn_order) {
+                            if (players.count(n) && !players[n].folded && (players[n].round_contribution < last_bet || !players[n].acted)) done = false;
+                        }
                         if (done) banker_deciding = true;
                         else next_turn();
                     }

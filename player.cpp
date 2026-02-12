@@ -10,6 +10,7 @@
 int sock = 0;
 std::string myName, potStr = "0", walletStr = "0", currentTurnName = "", lastBetStr = "0", myContribStr = "0";
 bool isMyTurn = false;
+bool isEliminated = false;
 char raiseInput[10] = "50";
 int letterCount = 2;
 bool inputActive = false;
@@ -22,27 +23,23 @@ void listenToServer() {
         int valread = recv(sock, buffer, 1024, 0);
         if (valread > 0) {
             std::string msg(buffer);
+            
+            // CHECK FOR ELIMINATION MESSAGE
+            if (msg.find("EXIT:") == 0) {
+                isEliminated = true;
+                continue;
+            }
+
             size_t pPos = msg.find("P:"), wPos = msg.find("|W:"), tPos = msg.find("|T:"), lPos = msg.find("|L:"), cPos = msg.find("|C:");
             if (pPos != std::string::npos) {
-                // WRAP IN TRY-CATCH TO PREVENT TERMINAL CRASH
                 try {
-                    std::string pPart = msg.substr(pPos + 2, wPos - (pPos + 2));
-                    std::string wPart = msg.substr(wPos + 3, tPos - (wPos + 3));
-                    std::string tPart = msg.substr(tPos + 3, lPos - (tPos + 3));
-                    std::string lPart = msg.substr(lPos + 3, cPos - (lPos + 3));
-                    std::string cPart = msg.substr(cPos + 3);
-
-                    // Only update if they are valid numbers
-                    if (!pPart.empty()) potStr = pPart;
-                    if (!wPart.empty()) walletStr = wPart;
-                    currentTurnName = tPart;
-                    if (!lPart.empty()) lastBetStr = lPart;
-                    if (!cPart.empty()) myContribStr = cPart;
-                    
+                    potStr = msg.substr(pPos + 2, wPos - (pPos + 2));
+                    walletStr = msg.substr(wPos + 3, tPos - (wPos + 3));
+                    currentTurnName = msg.substr(tPos + 3, lPos - (tPos + 3));
+                    lastBetStr = msg.substr(lPos + 3, cPos - (lPos + 3));
+                    myContribStr = msg.substr(cPos + 3);
                     isMyTurn = (currentTurnName == myName);
-                } catch (...) {
-                    // Packet was likely malformed during a rapid reset, ignore it
-                }
+                } catch (...) {}
             }
         }
     }
@@ -62,7 +59,7 @@ bool DrawButton(Rectangle rect, const char* text, Color color, bool active) {
 }
 
 int main() {
-    std::cout << "Name (No Spaces): "; std::cin >> myName;
+    std::cout << "Name: "; std::cin >> myName;
     std::cout << "Banker IP: "; std::string ip; std::cin >> ip;
 
     struct sockaddr_in serv_addr;
@@ -74,11 +71,11 @@ int main() {
     send(sock, myName.c_str(), myName.length(), 0);
     std::thread(listenToServer).detach();
 
-    InitWindow(500, 650, "Local Poker");
+    InitWindow(500, 650, "Poker Sync");
     SetTargetFPS(60);
 
     while (!WindowShouldClose()) {
-        if (inputActive) {
+        if (!isEliminated && inputActive) {
             int key = GetCharPressed();
             while (key > 0) {
                 if ((key >= '0' && key <= '9') && (letterCount < 9)) {
@@ -95,44 +92,53 @@ int main() {
 
         BeginDrawing();
             ClearBackground(GetColor(0x1a1a1aff));
-            int callAmt = std::stoi(lastBetStr) - std::stoi(myContribStr);
-            int currentWallet = std::stoi(walletStr);
-            
-            DrawRectangle(0, 0, 500, 180, GetColor(0x252525FF));
-            DrawText(TextFormat("POT: $%s", potStr.c_str()), 180, 40, 30, GOLD);
-            DrawText(TextFormat("YOUR WALLET: $%s", walletStr.c_str()), 40, 100, 20, GREEN);
-            DrawText(TextFormat("To Call: $%d", callAmt), 40, 130, 18, MAROON);
 
-            DrawRectangle(20, 200, 460, 60, isMyTurn ? DARKGREEN : DARKGRAY);
-            std::string status = (currentTurnName == "BANKER_DECIDING") ? "WAITING FOR BANKER..." : 
-                                 (isMyTurn ? "YOUR TURN" : "WAITING FOR: " + currentTurnName);
-            DrawText(status.c_str(), 40, 220, 20, WHITE);
+            if (isEliminated) {
+                DrawRectangle(0, 0, 500, 650, MAROON);
+                DrawText("GAME OVER", 110, 250, 50, WHITE);
+                DrawText("YOU ARE BANKRUPT", 140, 310, 20, LIGHTGRAY);
+                DrawText("You have been removed from the turn sequence.", 60, 380, 16, RAYWHITE);
+            } else {
+                int callAmt = std::stoi(lastBetStr) - std::stoi(myContribStr);
+                int currentWallet = std::stoi(walletStr);
+                
+                DrawRectangle(0, 0, 500, 180, GetColor(0x252525FF));
+                DrawText(TextFormat("POT: $%s", potStr.c_str()), 180, 40, 30, GOLD);
+                DrawText(TextFormat("YOUR WALLET: $%s", walletStr.c_str()), 40, 100, 20, GREEN);
+                DrawText(TextFormat("To Call: $%d", callAmt), 40, 130, 18, MAROON);
 
-            if (isMyTurn && currentTurnName != "BANKER_DECIDING") {
-                if (DrawButton({50, 300, 180, 50}, "FOLD", RED, true)) send(sock, "FOLD", 4, 0);
-                std::string callTxt = (callAmt == 0) ? "CHECK" : "CALL";
-                if (DrawButton({270, 300, 180, 50}, callTxt.c_str(), BLUE, true)) {
-                    if (currentWallet >= callAmt) send(sock, "CHECK", 5, 0);
-                    else errorTimer = 2.0f;
+                DrawRectangle(20, 200, 460, 60, isMyTurn ? DARKGREEN : DARKGRAY);
+                std::string status = (currentTurnName == "BANKER_DECIDING") ? "WAITING FOR BANKER..." : 
+                                    (isMyTurn ? "YOUR TURN" : "WAITING FOR: " + currentTurnName);
+                DrawText(status.c_str(), 40, 220, 20, WHITE);
+
+                if (isMyTurn && currentTurnName != "BANKER_DECIDING") {
+                    if (DrawButton({50, 300, 180, 50}, "FOLD", RED, true)) send(sock, "FOLD", 4, 0);
+                    std::string callTxt = (callAmt == 0) ? "CHECK" : "CALL";
+                    if (DrawButton({270, 300, 180, 50}, callTxt.c_str(), BLUE, true)) {
+                        if (currentWallet >= callAmt) send(sock, "CHECK", 5, 0);
+                        else errorTimer = 2.0f;
+                    }
+                    Rectangle rb = {50, 410, 180, 50};
+                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) inputActive = CheckCollisionPointRec(GetMousePosition(), rb);
+                    DrawRectangleRec(rb, inputActive ? WHITE : GRAY);
+                    DrawText(raiseInput, rb.x + 10, rb.y + 15, 20, BLACK);
+                    if (DrawButton({270, 410, 180, 50}, "RAISE", DARKGREEN, true)) {
+                        int raiseAmt = std::stoi(raiseInput);
+                        if (currentWallet >= raiseAmt) {
+                            std::string act = "BET:" + std::string(raiseInput);
+                            send(sock, act.c_str(), act.length(), 0);
+                        } else errorTimer = 2.0f;
+                    }
                 }
-                Rectangle rb = {50, 410, 180, 50};
-                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) inputActive = CheckCollisionPointRec(GetMousePosition(), rb);
-                DrawRectangleRec(rb, inputActive ? WHITE : GRAY);
-                DrawText(raiseInput, rb.x + 10, rb.y + 15, 20, BLACK);
-                if (DrawButton({270, 410, 180, 50}, "RAISE", DARKGREEN, true)) {
-                    int raiseAmt = std::stoi(raiseInput);
-                    if (currentWallet >= raiseAmt) {
-                        std::string act = "BET:" + std::string(raiseInput);
-                        send(sock, act.c_str(), act.length(), 0);
-                    } else errorTimer = 2.0f;
+                if (errorTimer > 0) {
+                    DrawText("INSUFFICIENT FUNDS!", 150, 500, 20, RED);
+                    errorTimer -= GetFrameTime();
                 }
             }
-            if (errorTimer > 0) {
-                DrawText("INSUFFICIENT FUNDS!", 150, 500, 20, RED);
-                errorTimer -= GetFrameTime();
-            }
+
             DrawRectangle(0, 600, 500, 50, BLACK);
-            DrawText(TextFormat("User: %s | Turn: %s", myName.c_str(), currentTurnName.c_str()), 10, 615, 12, GRAY);
+            DrawText(TextFormat("User: %s | Status: %s", myName.c_str(), isEliminated ? "ELIMINATED" : "ACTIVE"), 10, 615, 12, GRAY);
         EndDrawing();
     }
     CloseWindow();
