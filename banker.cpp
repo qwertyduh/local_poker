@@ -41,65 +41,28 @@ void broadcast_game_state() {
     }
 }
 
+// NEW: Check if the raise is affordable for everyone currently in the hand
+bool can_all_match(int target_bet) {
+    for (auto const& [name, p] : players) {
+        if (!p.folded) {
+            // Can the player afford the difference?
+            int needed = target_bet - p.round_contribution;
+            if (p.wallet < needed) return false;
+        }
+    }
+    return true;
+}
+
 void award_winner(std::string winner_name) {
     if (players.count(winner_name)) {
         players[winner_name].wallet += total_pot;
         std::cout << "\n>>> " << winner_name << " WON $" << total_pot << " <<<\n" << std::endl;
-        total_pot = 0;
-        last_bet = 0;
-        turn_index = 0;
+        total_pot = 0; last_bet = 0; turn_index = 0;
         for (auto &pair : players) {
             pair.second.folded = false;
             pair.second.round_contribution = 0;
             pair.second.acted = false;
         }
-    }
-}
-
-void handle_banker_input() {
-    while (true) {
-        if (banker_deciding) {
-            std::cout << "\n======================================" << std::endl;
-            std::cout << "         BANKER CONTROL PANEL         " << std::endl;
-            std::cout << "======================================" << std::endl;
-            std::cout << "1. NEXT ROUND (Flop/Turn/River)" << std::endl;
-            std::cout << "2. END HAND (Select Winner)" << std::endl;
-            std::cout << "Choice: ";
-            int choice; std::cin >> choice;
-
-            std::lock_guard<std::mutex> lock(game_mutex);
-            if (choice == 1) {
-                last_bet = 0;
-                turn_index = 0;
-                for (auto &pair : players) {
-                    pair.second.round_contribution = 0;
-                    pair.second.acted = false;
-                }
-                std::cout << "[SYSTEM] Starting next betting phase..." << std::endl;
-            } else {
-                std::vector<std::string> active_players;
-                for (auto const& name : turn_order) {
-                    if (!players[name].folded) active_players.push_back(name);
-                }
-
-                std::cout << "\n--- SELECT WINNER ---" << std::endl;
-                for (int i = 0; i < active_players.size(); ++i) {
-                    std::cout << i + 1 << ". " << active_players[i] << std::endl;
-                }
-                std::cout << "Enter Number: ";
-                int winner_idx; std::cin >> winner_idx;
-
-                if (winner_idx > 0 && winner_idx <= active_players.size()) {
-                    award_winner(active_players[winner_idx - 1]);
-                } else {
-                    std::cout << "[ERR] Invalid selection. Try again." << std::endl;
-                    continue; // Re-prompt
-                }
-            }
-            banker_deciding = false;
-            broadcast_game_state();
-        }
-        usleep(100000);
     }
 }
 
@@ -110,6 +73,29 @@ void next_turn() {
         turn_index = (turn_index + 1) % turn_order.size();
         if (turn_index == initial_index) break;
     } while (players[turn_order[turn_index]].folded);
+}
+
+void handle_banker_input() {
+    while (true) {
+        if (banker_deciding) {
+            std::cout << "\n--- BANKER CONTROL ---\n1. NEXT PHASE\n2. AWARD WINNER\nChoice: ";
+            int choice; std::cin >> choice;
+            std::lock_guard<std::mutex> lock(game_mutex);
+            if (choice == 1) {
+                last_bet = 0; turn_index = 0;
+                for (auto &pair : players) { pair.second.round_contribution = 0; pair.second.acted = false; }
+            } else {
+                std::vector<std::string> active;
+                for (auto const& n : turn_order) if (!players[n].folded) active.push_back(n);
+                for (int i=0; i<active.size(); ++i) std::cout << i+1 << ". " << active[i] << std::endl;
+                int idx; std::cin >> idx;
+                if (idx > 0 && idx <= active.size()) award_winner(active[idx-1]);
+            }
+            banker_deciding = false;
+            broadcast_game_state();
+        }
+        usleep(100000);
+    }
 }
 
 void handle_player(int client_socket) {
@@ -152,34 +138,32 @@ void handle_player(int client_socket) {
                         valid = true;
                     }
                 } else if (action.find("BET:") == 0) {
-                    int amount = std::stoi(action.substr(4));
-                    if (p.wallet >= amount && (p.round_contribution + amount) >= last_bet) {
-                        p.wallet -= amount;
-                        p.round_contribution += amount;
-                        total_pot += amount;
-                        last_bet = p.round_contribution;
-                        for (auto &pair : players) pair.second.acted = false;
-                        p.acted = true;
-                        valid = true;
-                    }
+                    try {
+                        int amount = std::stoi(action.substr(4));
+                        int target_total = p.round_contribution + amount;
+                        // NEW CRITICAL CHECK: Does everyone have enough money to match this?
+                        if (p.wallet >= amount && target_total >= last_bet && can_all_match(target_total)) {
+                            p.wallet -= amount;
+                            p.round_contribution += amount;
+                            total_pot += amount;
+                            last_bet = p.round_contribution;
+                            for (auto &pair : players) pair.second.acted = false;
+                            p.acted = true;
+                            valid = true;
+                        } else {
+                            std::cout << "[REJECTED] Bet of " << amount << " is too high for the table or invalid." << std::endl;
+                        }
+                    } catch (...) {}
                 }
 
                 if (valid) {
-                    int active_count = 0;
-                    std::string last_standing;
-                    for (auto const& [n, pl] : players) {
-                        if (!pl.folded) { active_count++; last_standing = n; }
-                    }
-                    if (active_count == 1) award_winner(last_standing);
+                    int active_count = 0; std::string last;
+                    for (auto const& [n, pl] : players) if (!pl.folded) { active_count++; last = n; }
+                    if (active_count == 1) award_winner(last);
                     else {
-                        bool all_matched = true;
-                        for (auto const& [n, pl] : players) {
-                            if (!pl.folded && (pl.round_contribution < last_bet || !pl.acted)) {
-                                all_matched = false;
-                                break;
-                            }
-                        }
-                        if (all_matched) banker_deciding = true;
+                        bool done = true;
+                        for (auto const& [n, pl] : players) if (!pl.folded && (pl.round_contribution < last_bet || !pl.acted)) done = false;
+                        if (done) banker_deciding = true;
                         else next_turn();
                     }
                 }
@@ -193,19 +177,15 @@ void handle_player(int client_socket) {
 int main() {
     std::cout << "Starting Budget: "; std::cin >> starting_budget;
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in address;
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(65432);
-    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+    int opt = 1; setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr; addr.sin_family = AF_INET; addr.sin_addr.s_addr = INADDR_ANY; addr.sin_port = htons(65432);
+    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
     listen(server_fd, 5);
     std::thread(handle_banker_input).detach();
     std::cout << "BANKER LIVE." << std::endl;
     while (true) {
-        int new_socket = accept(server_fd, NULL, NULL);
-        std::thread(handle_player, new_socket).detach();
+        int ns = accept(server_fd, NULL, NULL);
+        std::thread(handle_player, ns).detach();
     }
     return 0;
 }
