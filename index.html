@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<body>
+    <h1>User Sync Screen</h1>
+    <div id="user-container"></div>
+    <input type="number" id="numInput" placeholder="Change your number">
+    <button onclick="sendUpdate()">Update Everyone</button>
+    <input type="text" id="nameInput" placeholder="Change your name">
+    <button onclick="connectToServer()">Join Game</button>
+
+    <script src="/socket.io/socket.io.js"></script>
+    
+    <script>
+        let socket;
+
+        function connectToServer(){
+            const chosenName=document.getElementById('nameInput').value
+
+            if(!chosenName){
+                alert("Registering as anonymous")
+                chosenName="Anon"
+            }
+            socket=io({
+                query:{
+                    customId:chosenName
+                }
+            });
+
+            socket.on('connect', () => {
+                console.log("Connected as:", chosenName);
+            });
+        }
+
+        // 3. Sending data to the server (Emission)
+        function sendUpdate() {
+            const myName = document.getElementById('nameInput').value;
+            const myNumber = document.getElementById('numInput').value;
+
+            socket.emit('update_number', {
+                userName: myName,
+                userValue: myNumber
+            });
+        }
+
+        // 4. Listening for data from the server (Listener)
+        socket.on('number_changed', (data) => {
+            console.log("Someone changed their number!", data);
+            // Logic to update the UI would go here
+            alert(`User ${data.userName} set their number to ${data.userValue}`);
+        });
+    </script>
+</body>
+</html>
