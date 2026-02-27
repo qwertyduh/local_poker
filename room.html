@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Poker Room - Local Sync</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f4f7f6; }
+        .dashboard { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
+        .status-box { border-left: 5px solid #2ecc71; background: #e8f8f5; padding: 10px; margin-bottom: 20px; }
+        .counter-display { font-size: 1.2em; margin: 10px 0; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 4px; }
+        .turn-highlight { color: #e74c3c; font-weight: bold; border: 2px solid #e74c3c; padding: 5px; display: inline-block; margin-bottom: 10px; }
+        input { padding: 10px; width: 70%; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 10px 20px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #2980b9; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+<div class="dashboard">
+    <div id="header-info"></div>
+    <div id="turn-display" class="turn-highlight">Loading turn info...</div>
+    
+    <div class="status-box">
+        <div class="counter-display">Your Wallet: $<span id="personal-num">300</span></div>
+        <div class="counter-display">Current Pot: $<span id="shared-num">0</span></div>
+        <div class="counter-display">Last Bet: $<span id="last-bet">0</span></div>
+        <div class="counter-display">Last Player to Move: <span id="last-player">None</span></div>
+    </div>
+
+    <input type="number" id="numInput" placeholder="Enter bet amount">
+    <button id="betBtn" onclick="sendUpdate()">Place Bet</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+    // 1. CONFIGURATION
+    const SUPABASE_URL = 'http://192.169.2.192:54321';
+    const SUPABASE_ANON_KEY = 'sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH'; 
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // 2. IDENTITY & ROOM SETUP
+    const urlParams = new URLSearchParams(window.location.search);
+    const customId = urlParams.get('customId') || `Anon_${Math.random().toString(36).substring(2, 7)}`;
+    const roomId = urlParams.get('roomId') || 'lobby';
+    
+    let mySequence = 0;
+    let totalPlayersInRoom = 0;
+
+    const channel = supabaseClient.channel(`room:${roomId}`, {
+        config: { presence: { key: customId } }
+    });
+
+    // 3. INITIALIZATION
+    async function init() {
+        document.getElementById('header-info').innerHTML = `<h2>Room: ${roomId}</h2><p>Logged in as: <strong>${customId}</strong></p>`;
+
+        // Fetch current turn and game state
+        const { data: turnData } = await supabaseClient.from('hand_history').select('amount').eq('player_name', 'CURRENT_TURN').eq('room_id', roomId).maybeSingle();
+        const currentTurn = turnData ? turnData.amount : 1;
+        updateTurnUI(currentTurn);
+
+        const { data: potData } = await supabaseClient.from('hand_history').select('amount').eq('player_name', 'GLOBAL_POT').eq('room_id', roomId).maybeSingle();
+        if (potData) document.getElementById('shared-num').innerText = potData.amount;
+
+        const { data: betData } = await supabaseClient.from('hand_history').select('amount').eq('player_name', 'LAST_BET').eq('room_id', roomId).maybeSingle();
+        if (betData) document.getElementById('last-bet').innerText = betData.amount;
+
+        // Fetch or Assign Sequence
+        const { data: userData } = await supabaseClient.from('hand_history').select('amount, user_sequence').eq('player_name', customId).eq('room_id', roomId).maybeSingle();
+
+        if (userData && userData.user_sequence) {
+            mySequence = userData.user_sequence;
+            document.getElementById('personal-num').innerText = userData.amount;
+        } else {
+            // Get total player count to assign next sequence
+            const { data: totalData } = await supabaseClient.from('hand_history').select('amount').eq('player_name', 'TOTAL_PLAYERS').eq('room_id', roomId).maybeSingle();
+            
+            totalPlayersInRoom = (totalData ? totalData.amount : 0) + 1;
+            mySequence = totalPlayersInRoom;
+
+            await supabaseClient.from('hand_history').upsert({ player_name: customId, room_id: roomId, amount: 300, user_sequence: mySequence });
+            await supabaseClient.from('hand_history').upsert({ player_name: 'TOTAL_PLAYERS', room_id: roomId, amount: totalPlayersInRoom });
+        }
+
+        document.getElementById('header-info').insertAdjacentHTML('beforeend', `<p>Your Player Number: <strong>#${mySequence}</strong></p>`);
+        checkTurn(currentTurn);
+    }
+
+    // 4. CORE GAME LOGIC
+    function updateTurnUI(turn) {
+        document.getElementById('turn-display').innerText = `Current Turn: Player #${turn}`;
+    }
+
+    function checkTurn(currentTurn) {
+        const btn = document.getElementById('betBtn');
+        if (currentTurn === mySequence) {
+            btn.disabled = false;
+            document.getElementById('turn-display').style.background = "#fff3cd";
+        } else {
+            btn.disabled = true;
+            document.getElementById('turn-display').style.background = "transparent";
+        }
+    }
+
+    async function sendUpdate() {
+        const rawInput = document.getElementById('numInput').value;
+        const requestedAmount = parseInt(rawInput, 10);
+        const currentWallet = parseInt(document.getElementById('personal-num').innerText, 10);
+        const currentPot = parseInt(document.getElementById('shared-num').innerText, 10);
+
+        if (!rawInput || isNaN(requestedAmount) || requestedAmount > currentWallet) {
+            alert("Check your bet amount and wallet balance!");
+            return;
+        }
+
+        // Calculate next turn (Cyclic)
+        const { data: totalData } = await supabaseClient.from('hand_history').select('amount').eq('player_name', 'TOTAL_PLAYERS').eq('room_id', roomId).single();
+        const maxPlayers = totalData.amount;
+        const nextTurn = (mySequence % maxPlayers) + 1;
+
+        const newPot = currentPot + requestedAmount;
+        const newWallet = currentWallet - requestedAmount;
+
+        // Broadcast to room
+        await channel.send({
+            type: 'broadcast',
+            event: 'game_update',
+            payload: { nextTurn, lastPlayer: customId, bet: requestedAmount, pot: newPot }
+        });
+
+        // Save to Database
+        const ctx = { room_id: roomId };
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: 'CURRENT_TURN', amount: nextTurn });
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: 'GLOBAL_POT', amount: newPot });
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: 'LAST_BET', amount: requestedAmount });
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: customId, amount: newWallet });
+
+        document.getElementById('personal-num').innerText = newWallet;
+        document.getElementById('shared-num').innerText = newPot;
+        document.getElementById('last-bet').innerText = requestedAmount;
+        document.getElementById('last-player').innerText = customId;
+        updateTurnUI(nextTurn);
+        document.getElementById('numInput').value = '';
+        checkTurn(nextTurn);
+    }
+
+    // 5. REALTIME LISTENERS
+    channel.on('broadcast', { event: 'game_update' }, (payload) => {
+        const p = payload.payload;
+        document.getElementById('shared-num').innerText = p.pot;
+        document.getElementById('last-bet').innerText = p.bet;
+        document.getElementById('last-player').innerText = p.lastPlayer;
+        updateTurnUI(p.nextTurn);
+        checkTurn(p.nextTurn);
+    }).subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+            await channel.track({ online_at: new Date().toISOString() });
+            init();
+        }
+    });
+
+</script>
+
+</body>
+</html>

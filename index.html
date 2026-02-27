@@ -1,53 +1,44 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Local Poker</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .user-tag { display: inline-block; padding: 5px 10px; margin: 5px; border: 1px solid #ccc; border-radius: 4px; }
+    </style>
+</head>
 <body>
+
     <h1>User Sync Screen</h1>
     <div id="user-container"></div>
-    <input type="number" id="numInput" placeholder="Change your number">
-    <button onclick="sendUpdate()">Update Everyone</button>
-    <input type="text" id="nameInput" placeholder="Change your name">
-    <button onclick="connectToServer()">Join Game</button>
+    <hr>
+    <input type="text" id="roomInput" placeholder="New Room">
+    <input type="text" id="nameInput" placeholder="New Name">
+    <button onclick="changeName()">Update Name</button>
+    <br><br>
 
-    <script src="/socket.io/socket.io.js"></script>
-    
     <script>
-        let socket;
+        function changeName() {
+        const nameInput = document.getElementById('nameInput');
+        const roomInput = document.getElementById('roomInput');
+        const newName = nameInput.value.trim();
+        const newRoom = roomInput.value.trim();
 
-        function connectToServer(){
-            const chosenName=document.getElementById('nameInput').value
-
-            if(!chosenName){
-                alert("Registering as anonymous")
-                chosenName="Anon"
-            }
-            socket=io({
-                query:{
-                    customId:chosenName
-                }
-            });
-
-            socket.on('connect', () => {
-                console.log("Connected as:", chosenName);
-            });
+        const reservedNames = ["GLOBAL_POT", "LAST_BET"];        
+        if (reservedNames.includes(newName.toUpperCase())) {
+            console.log("Invalid Name: This name is reserved for system use.");
+            alert("That name is reserved. Please choose another name.");
+            nameInput.value = "";
+            return;
         }
 
-        // 3. Sending data to the server (Emission)
-        function sendUpdate() {
-            const myName = document.getElementById('nameInput').value;
-            const myNumber = document.getElementById('numInput').value;
+        const currentParams = new URLSearchParams(window.location.search);
+        const id = newName || currentParams.get('customId') || 'Anon';
+        const room = newRoom || currentParams.get('roomId') || 'lobby';
 
-            socket.emit('update_number', {
-                userName: myName,
-                userValue: myNumber
-            });
-        }
-
-        // 4. Listening for data from the server (Listener)
-        socket.on('number_changed', (data) => {
-            console.log("Someone changed their number!", data);
-            // Logic to update the UI would go here
-            alert(`User ${data.userName} set their number to ${data.userValue}`);
-        });
+        window.location.href = `room.html?roomId=${room}&customId=${id}`;
+    }
     </script>
 </body>
 </html>
