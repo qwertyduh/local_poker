@@ -27,9 +27,15 @@
         <div class="counter-display">Last Bet: $<span id="last-bet">0</span></div>
         <div class="counter-display">Last Player to Move: <span id="last-player">None</span></div>
     </div>
+    <div class="counter-display"><span id="cards"></span></div>
 
     <input type="number" id="numInput" placeholder="Enter bet amount">
     <button id="betBtn" onclick="sendUpdate()">Place Bet</button>
+    <div id="settle-panel" style="display: none; border: 2px solid #e67e22; padding: 15px; background: #fef5e7; margin-top: 20px; border-radius: 8px;">
+        <h3>Settle Pot: Choose Winner</h3>
+        <div id="player-buttons-area"></div>
+        <button onclick="document.getElementById('settle-panel').style.display='none'" style="margin-top:10px; background:#95a5a6;">Cancel</button>
+    </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -47,6 +53,7 @@
     
     let mySequence = 0;
     let totalPlayersInRoom = 0;
+    let round = 0;
 
     const channel = supabaseClient.channel(`room:${roomId}`, {
         config: { presence: { key: customId } }
@@ -91,6 +98,19 @@
     // 4. CORE GAME LOGIC
     function updateTurnUI(turn) {
         document.getElementById('turn-display').innerText = `Current Turn: Player #${turn}`;
+        if(turn==1){
+            console.log("new round");
+            round++;
+            if(round==1)
+                document.getElementById('cards').innerText +=" [] [] []";
+            else if(round<1)        //change to 4
+                document.getElementById('cards').innerText +=" []";
+            else{
+                document.getElementById('cards').innerText ="";
+                round=0;
+                settle();
+            }
+        }
     }
 
     function checkTurn(currentTurn) {
@@ -127,7 +147,11 @@
         await channel.send({
             type: 'broadcast',
             event: 'game_update',
-            payload: { nextTurn, lastPlayer: customId, bet: requestedAmount, pot: newPot }
+            payload: { 
+                nextTurn, 
+                lastPlayer: customId, 
+                bet: requestedAmount, 
+                pot: newPot }
         });
 
         // Save to Database
@@ -160,6 +184,83 @@
             init();
         }
     });
+    channel.on('broadcast', { event: 'settlement_complete' }, (payload) => {
+        document.getElementById('shared-num').innerText = "0";
+        document.getElementById('last-bet').innerText = "0";
+        init();
+    });
+
+    async function settle() {
+        if (mySequence !== 1) {
+            return;
+        }
+
+        const panel = document.getElementById('settle-panel');
+        const btnArea = document.getElementById('player-buttons-area');
+        btnArea.innerHTML = "Loading players...";
+        panel.style.display = 'block';
+
+        // 2. Fetch all active players in this room
+        const { data: players, error } = await supabaseClient
+            .from('hand_history')
+            .select('player_name, amount')
+            .eq('room_id', roomId)
+            .neq('player_name', 'GLOBAL_POT')
+            .neq('player_name', 'LAST_BET')
+            .neq('player_name', 'TOTAL_PLAYERS')
+            .neq('player_name', 'CURRENT_TURN')
+            .neq('player_name', 'ACTED_COUNT');
+
+        if (error) {
+            console.error("Error fetching players:", error.message);
+            return;
+        }
+
+        // 3. Create buttons for each player
+        btnArea.innerHTML = ""; // Clear loader
+        players.forEach(player => {
+            const btn = document.createElement('button');
+            btn.innerText = `Give Pot to ${player.player_name}`;
+            btn.style.margin = "5px";
+            btn.style.display = "block";
+            btn.style.width = "100%";
+            
+            // When clicked, run the transfer logic
+            btn.onclick = () => finalizeSettlement(player.player_name);
+            
+            btnArea.appendChild(btn);
+        });
+    }
+
+    async function finalizeSettlement(winnerName) {
+        const currentPot = parseInt(document.getElementById('shared-num').innerText, 10);
+        
+        // 1. Fetch winner's current balance
+        const { data: winnerData } = await supabaseClient
+            .from('hand_history')
+            .select('amount')
+            .eq('player_name', winnerName)
+            .eq('room_id', roomId)
+            .single();
+
+        const newBalance = (winnerData ? winnerData.amount : 0) + currentPot;
+
+        // 2. Database Updates
+        const ctx = { room_id: roomId };
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: winnerName, amount: newBalance });
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: 'GLOBAL_POT', amount: 0 });
+        await supabaseClient.from('hand_history').upsert({ ...ctx, player_name: 'LAST_BET', amount: 0 });
+
+        // 3. Broadcast update so everyone's UI refreshes
+        await channel.send({
+            type: 'broadcast',
+            event: 'settlement_complete',
+            payload: { winner: winnerName, newPot: 0 }
+        });
+        window.location.reload();
+
+        document.getElementById('settle-panel').style.display = 'none';
+    }
 
 </script>
 
