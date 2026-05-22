@@ -1,18 +1,9 @@
-# macOS system files
+node_modules/
+dist/
 .DS_Store
-.AppleDouble
-.LSOverride
 
-# C++ Compiled Binaries
-banker_app
-player_app
-*.o
-*.out
+.env
+.env.local
 
-# IDE specific files (if you use them)
-.vscode/
-.idea/
-*.swp
-
-# Raylib/Build artifacts
-build/
+supabase/.temp/
+supabase/migrations/.empty
